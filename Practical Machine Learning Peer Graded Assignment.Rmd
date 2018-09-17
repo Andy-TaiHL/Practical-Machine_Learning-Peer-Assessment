@@ -1,0 +1,183 @@
+---
+title: "Analysis of wearable fitness devices data using machine learning models: (1)random forest model and (2) rpart model"
+author: "Andy Tai"
+date: "16 September 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+The goal of this project is to predict the manner (or activity) in which they did the exercise. These exercises (labelled as "A, B, C, D, E") are captured in the "classe" variable in the training set, and our intent is to predict the type of exercises in the testing dataset. 
+
+#Initialisation
+clear memory space
+```{r cachedChunk, cache=TRUE}
+rm(list=ls()) #free up memory so as to download the data set
+# .rs.restartR()
+```
+
+check memory limit and allocate more memory to R
+```{r}
+memory.limit() #[1] 8090
+memory.limit(10*10^10)
+```
+
+set working directory
+```{r}
+setwd("C:\\Users\\Andy's Home PC\\Documents\\Coursera Courses\\Data Science\\Practical Machine Learning\\Week 4\\Peer Graded Assignment")
+```
+
+download training data and read the downloaded file
+```{r}
+if(!file.exists("./data")){dir.create("./data")} #this will create a folder "data", if it doesn't exists
+fileUrl = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(fileUrl, destfile="./data/pml-training.csv", method="curl") #this download the file
+training <- read.csv("./data/pml-training.csv", sep=",", header=TRUE, na.strings=c("NA", "#DIV/0!", ""))
+```
+
+download testing data and read the downloaded file
+```{r}
+if(!file.exists("./data")){dir.create("./data")} #this will create a folder "data", if it doesn't exists
+fileUrl2 = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(fileUrl2, destfile="./data/pml-testing.csv", method="curl") #this download the file
+testing <- read.csv("./data/pml-testing.csv", sep=",", header=TRUE, na.strings=c("NA", "#DIV/0!", ""))
+```
+
+
+
+#Load necessary packages and set seed
+Load the essential packages
+```{r}
+suppressMessages(library(caret))
+suppressMessages(library(randomForest))
+suppressMessages(library(rpart))
+suppressMessages(library(rpart.plot))
+suppressMessages(library(RColorBrewer))
+suppressMessages(library(rattle))
+suppressMessages(library(ggplot2))
+```
+
+set seed to ensure reproducibility
+```{r}
+set.seed(650542)
+```
+
+
+#Exploring the Data
+Find size of training dataset & testing dataset
+```{r}
+dim(training)#[1] 19622   160
+dim(testing)#[1]  20 160
+```
+
+We further split our training dataset into 2 smaller data sets to use for training and testing while minimising model over-fitting. Let's use 80:20 for our training:testing sub-data sets accordingly.
+```{r}
+inTrain <- createDataPartition(training$classe, p=0.8, list=FALSE)
+subTraining <- training[inTrain, ]
+subTesting <- training[-inTrain, ]
+dim(subTraining)#[1] 15699   160
+dim(subTesting)#[1] 3923  160
+```
+
+Find details of the "classe" variable
+```{r}
+str(training$classe) #factor variable with 5 levels
+table(subTraining$classe)#A:4464; B:3038; C:2738; D:2573; E:2886 
+```
+In our subtraining dataset, there are 15699 observation and 160 variables. One of these variables, "classe" column is a factor variable comprising of 5 levels.
+
+#Data Pre-Processing
+###(1)Remove missing values
+Let's check for any missing values in training dataset, and store them in a list
+```{r}
+na_count<- sapply(1:dim(training)[2], function(x) sum(is.na(training[,x])))
+na_list <- which(na_count>0)
+```
+
+Let's remove missing values in subTraining, subTesting, and testing datasets.
+```{r}
+subTraining<-subTraining[,-na_list]
+subTesting<-subTesting[,-na_list]
+testing<-testing[,-na_list]
+```
+
+
+###(2)Remove irrelevant columns
+Let's print the first 7 columns of the training set
+```{r}
+head(training[, c(1:7)])
+```
+Note that these first 7 columns are not relevant, let's remove them in all our datasets (i.e. subTraining, subTesting, and testing).
+```{r}
+subTraining<-subTraining[,-c(1:7)]
+subTesting<-subTesting[,-c(1:7)]
+testing<-testing[,-c(1:7)]
+```
+
+#Processing our data
+###(1)Configure parallel processing
+This step is important as running processes like random forest can take many hours.
+```{r}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores()-1) #convention to leave 1 core for OS
+registerDoParallel(cluster)
+```
+
+###(2)Configure trainControl object
+The key parameters for trainControl object are: (1) the resampling method "method"; (2) "number" that specifies the quantity of folds for K-fold cross-validation, and (3) "allowParallel" that tells caret to use the cluster registered in earlier step.
+
+Here, we are using k-fold cross validation ("cv") method, with 5 folds, and allowing for parallel processing.
+```{r}
+fitControl <- trainControl(method="cv", number=5, allowParallel=TRUE, verboseIter = TRUE)
+```
+
+###(3)Training our pre-processed data in subTraining dataset, and validating it on subTesting dataset to ascertain its accuracy
+
+####(3a)Model 1 ("Random Forest") - using rf
+```{r}
+#train model using subTraining dataset
+model_RandomForest <- train(classe~., data=subTraining, method="rf", trControl=fitControl, tuneGrid=data.frame(mtry=7))
+  #mtry: Number of variables randomly sampled as candidates at each split.
+
+#predict trained model on subTesting dataset
+predict_RandomForest <- predict(model_RandomForest, subTesting[,-53])#less off "classe" variable in the 53th column
+
+#calculate confusion matrix
+accuracy_RandomForest <- confusionMatrix(predict_RandomForest, subTesting$classe)
+print(accuracy_RandomForest)
+```
+The accuracy from our random forest model is more than 99%.
+
+
+####(3b)Model 2 ("Recursive Partitioning And Regression Trees (rpart)") - using rpart
+```{r}
+#train model using subTraining dataset
+model_rpart <- train(classe~., data=subTraining, method="rpart", trControl=fitControl)
+  #rpart no need to specify mtry
+
+#predict trained model on subTesting dataset
+predict_rpart <- predict(model_rpart, subTesting[,-53])#less off "classe" variable in the 53th column
+
+#calculate confusion matrix
+accuracy_rpart <- confusionMatrix(predict_rpart, subTesting$classe)
+print(accuracy_rpart)
+```
+Accuracy from the decision tree (using "rpart") is only about 50%.
+
+#Conclusion
+Since our random forest model has greater accuracy, we shall apply the model on the testing dataset to predict the activity class.
+
+###Predictions on testing dataset
+```{r}
+  #predict trained model on subTesting dataset
+predict_RandomForest_validation <- predict(model_RandomForest, testing)
+predict_RandomForest_validation
+
+```
+Hence, the predicted activity classes for the 20 rows in the testing dataset are: B A B A A E D B A A B C B A E E A B B B 
